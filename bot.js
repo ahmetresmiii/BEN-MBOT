@@ -1,48 +1,39 @@
 import { Telegraf } from 'telegraf';
+import express from 'express';
 import fetch from 'node-fetch';
 
-// Token ve API Key Tanımlamaları
 const TELEGRAM_TOKEN = '8969523700:AAHIjbru2jO8EJ3Y7A56GicjVhxI28xB9y8';
 const OPENROUTER_KEY = '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';
 
 const bot = new Telegraf(TELEGRAM_TOKEN);
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-// Hafızada kullanıcı geçmişini tutmak için basit bir nesne (Her kullanıcı için ayrı geçmiş)
+// Render'ın sana vereceği "https://projeniz.onrender.com" şeklindeki url
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL; 
+
 const userConversations = {};
-
-// Sistem Talimatı (Net, pratik ve hızlı)
 const SYSTEM_INSTRUCTION = `Sen pratik, zeki ve teknik bilgiye sahip bir asistansın. 
 Gereksiz kibarlık veya uzatılmış giriş/sonuç cümleleri kullanma. 
 İstenilen kodu, komutu veya bilgiyi doğrudan, en sade ve en optimize haliyle sun.`;
 
-// /start komutu
 bot.start((ctx) => {
-    const userId = ctx.from.id;
-    userConversations[userId] = []; // Geçmişi sıfırla
-    ctx.reply('Merhaba! Ben OpenRouter tabanlı yapay zeka asistanın. Sorularını doğrudan sorabilirsin.');
+    userConversations[ctx.from.id] = [];
+    ctx.reply('Merhaba! Render üzerinde kesintisiz çalışan yapay zeka asistanın aktif. Sorularını sorabilirsin.');
 });
 
-// /clear komutu (Geçmişi temizlemek için)
 bot.command('clear', (ctx) => {
-    const userId = ctx.from.id;
-    userConversations[userId] = [];
+    userConversations[ctx.from.id] = [];
     ctx.reply('Konuşma geçmişimiz temizlendi.');
 });
 
-// Gelen tüm metin mesajlarını yakala
 bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const userMessage = ctx.message.text;
 
-    // Kullanıcının geçmişi yoksa oluştur
-    if (!userConversations[userId]) {
-        userConversations[userId] = [];
-    }
-
-    // Telegram'da işlem yapılıyor efekti göster (Yazıyor...)
+    if (!userConversations[userId]) userConversations[userId] = [];
     await ctx.sendChatAction('typing');
 
-    // İstek geçmişini ve yeni mesajı OpenRouter formatına dönüştür
     const messages = [
         { role: 'system', content: SYSTEM_INSTRUCTION },
         ...userConversations[userId],
@@ -59,40 +50,46 @@ bot.on('text', async (ctx) => {
                 'X-Title': 'Telegram Assistant Bot'
             },
             body: JSON.stringify({
-                model: 'openrouter/auto', // Otomatik model seçimi
+                model: 'openrouter/auto',
                 messages: messages,
                 temperature: 0.6
             })
         });
 
-        if (!response.ok) {
-            throw new Error('OpenRouter API yanıt vermedi.');
-        }
+        if (!response.ok) throw new Error('OpenRouter API hatası.');
 
         const data = await response.json();
         const aiResponse = data.choices[0].message.content;
 
-        // Geçmişe ekle (Hafıza sınırı için son 10 mesajı tut)
         userConversations[userId].push({ role: 'user', content: userMessage });
         userConversations[userId].push({ role: 'assistant', content: aiResponse });
-        if (userConversations[userId].length > 10) {
-            userConversations[userId].splice(0, 2); // En eski soru-cevabı sil
-        }
+        if (userConversations[userId].length > 10) userConversations[userId].splice(0, 2);
 
-        // Telegram üzerinden kullanıcıya yanıtı gönder
         await ctx.reply(aiResponse);
-
     } catch (error) {
-        console.error('Hata oluştu:', error);
-        await ctx.reply('Üzgünüm, şu anda yanıt oluştururken bir hata meydana geldi.');
+        console.error(error);
+        await ctx.reply('Şu anda yanıt oluşturulamadı, lütfen tekrar dene.');
     }
 });
 
-// Botu başlat
-bot.launch().then(() => {
-    console.log('Telegram botu başarıyla çalıştırıldı!');
+// Render Sağlık Kontrolü Endpoint'i
+app.get('/', (req, res) => res.send('Bot Status: Active'));
+
+// Webhook Ayarı ve Sunucu Başlatma
+if (RENDER_URL) {
+    app.use(bot.webhookCallback(`/bot${TELEGRAM_TOKEN}`));
+    bot.telegram.setWebhook(`${RENDER_URL}/bot${TELEGRAM_TOKEN}`)
+        .then(() => console.log('Webhook başarıyla ayarlandı:', RENDER_URL))
+        .catch((err) => console.error('Webhook ayarlanırken hata:', err));
+} else {
+    // Yerelde test ederken polling kullanır
+    bot.launch();
+    console.log('Yerel modda çalışıyor (Polling)...');
+}
+
+app.listen(PORT, () => {
+    console.log(`Sunucu ${PORT} portunda dinleniyor.`);
 });
 
-// Güvenli kapatma işlemleri
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
